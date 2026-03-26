@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from decimal import Decimal
 from enum import Enum
 
 
@@ -15,13 +16,20 @@ class DiscountType(str, Enum):
     BANK = "bank"
 
 
+class CardType(str, Enum):
+    """Supported card types for bank offers."""
+
+    CREDIT = "credit"
+    DEBIT = "debit"
+
+
 @dataclass(frozen=True)
 class Product:
     id: str
     name: str
     brand: str
     category: str
-    mrp: float
+    mrp: Decimal
 
     def __post_init__(self) -> None:
         if self.mrp <= 0:
@@ -38,14 +46,14 @@ class CartItem:
             raise ValueError(f"Quantity must be at least 1, got {self.quantity}")
 
     @property
-    def subtotal(self) -> float:
+    def subtotal(self) -> Decimal:
         return self.product.mrp * self.quantity
 
 
 @dataclass(frozen=True)
 class PaymentInfo:
     bank: str
-    card_type: str  # "credit" or "debit"
+    card_type: CardType
 
 
 @dataclass(frozen=True)
@@ -54,10 +62,10 @@ class DiscountBreakdown:
 
     discount_type: DiscountType
     description: str
-    percentage: float
-    amount: float
-    price_before: float
-    price_after: float
+    percentage: Decimal
+    amount: Decimal
+    price_before: Decimal
+    price_after: Decimal
 
 
 @dataclass
@@ -66,8 +74,8 @@ class DiscountedPrice:
 
     product_name: str
     quantity: int
-    original_price: float
-    final_price: float
-    total_discount: float
-    total_discount_percentage: float
+    original_price: Decimal
+    final_price: Decimal
+    total_discount: Decimal
+    total_discount_percentage: Decimal
     applied_discounts: list[DiscountBreakdown] = field(default_factory=list)

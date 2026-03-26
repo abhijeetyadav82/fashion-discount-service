@@ -1,14 +1,12 @@
 """Demo script — run the discount service against sample data."""
 
-from fake_data import (
-    bank_offers, brand_discounts, category_discounts, vouchers,
-    icici_payment, puma_tshirt, sample_cart, CartItem,
-)
+from fake_data import active_discounts, icici_payment, puma_tshirt, sample_cart
+from models import CartItem
 from service import DiscountService
 
 
 def main() -> None:
-    svc = DiscountService(brand_discounts, category_discounts, vouchers, bank_offers)
+    svc = DiscountService(active_discounts)
 
     print("=" * 62)
     print("  Unifize Fashion Store — Discount Calculator Demo")

@@ -2,15 +2,12 @@
 
 from __future__ import annotations
 
-import sys
-from pathlib import Path
-
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from decimal import Decimal
 
 import pytest
 
 from discounts import BankOffer, BrandDiscount, CategoryDiscount, VoucherDiscount
-from models import CartItem, DiscountType, PaymentInfo, Product
+from models import CardType, CartItem, DiscountType, PaymentInfo, Product
 from service import DiscountService
 
 
@@ -19,37 +16,32 @@ from service import DiscountService
 
 @pytest.fixture
 def puma_tshirt() -> Product:
-    return Product(id="P1", name="PUMA Tee", brand="PUMA", category="T-Shirts", mrp=1499.0)
+    return Product(id="P1", name="PUMA Tee", brand="PUMA", category="T-Shirts", mrp=Decimal("1499.00"))
 
 
 @pytest.fixture
 def nike_shoes() -> Product:
-    return Product(id="P2", name="Nike Air Max", brand="Nike", category="Shoes", mrp=8995.0)
+    return Product(id="P2", name="Nike Air Max", brand="Nike", category="Shoes", mrp=Decimal("8995.00"))
 
 
 @pytest.fixture
-def all_rules():
-    return (
-        [BrandDiscount(brand="PUMA", min_discount_pct=40.0)],
-        [CategoryDiscount(category="T-Shirts", discount_pct=10.0)],
-        [VoucherDiscount(code="SUPER69", discount_pct=69.0)],
-        [BankOffer(bank="ICICI", discount_pct=10.0)],
-    )
-
-
-@pytest.fixture
-def svc(all_rules) -> DiscountService:
-    return DiscountService(*all_rules)
+def svc() -> DiscountService:
+    return DiscountService([
+        BrandDiscount(brand="PUMA", min_discount_pct=Decimal("40")),
+        CategoryDiscount(category="T-Shirts", discount_pct=Decimal("10")),
+        VoucherDiscount(code="SUPER69", discount_pct=Decimal("69")),
+        BankOffer(bank="ICICI", discount_pct=Decimal("10")),
+    ])
 
 
 @pytest.fixture
 def icici() -> PaymentInfo:
-    return PaymentInfo(bank="ICICI", card_type="credit")
+    return PaymentInfo(bank="ICICI", card_type=CardType.CREDIT)
 
 
 @pytest.fixture
 def hdfc() -> PaymentInfo:
-    return PaymentInfo(bank="HDFC", card_type="debit")
+    return PaymentInfo(bank="HDFC", card_type=CardType.DEBIT)
 
 
 # ── Stacking order: brand → category → bank ────────────────
@@ -66,7 +58,7 @@ class TestStackingOrder:
 
     def test_final_price(self, svc, puma_tshirt, icici):
         [result] = svc.calculate_cart_discounts([CartItem(puma_tshirt)], icici)
-        assert result.final_price == 728.51
+        assert result.final_price == Decimal("728.51")
 
     def test_three_discounts_applied(self, svc, puma_tshirt, icici):
         [result] = svc.calculate_cart_discounts([CartItem(puma_tshirt)], icici)
@@ -81,7 +73,7 @@ class TestStackingOrder:
         """Category discount must apply to the brand-discounted price, not MRP."""
         [result] = svc.calculate_cart_discounts([CartItem(puma_tshirt)], icici)
         _, cat, _ = result.applied_discounts
-        assert cat.price_before == 899.40
+        assert cat.price_before == Decimal("899.40")
 
 
 # ── Full stacking with voucher ──────────────────────────────
@@ -92,7 +84,7 @@ class TestStackingWithVoucher:
         [result] = svc.calculate_cart_discounts(
             [CartItem(puma_tshirt)], icici, voucher_code="SUPER69"
         )
-        assert result.final_price == 225.84
+        assert result.final_price == Decimal("225.84")
 
     def test_four_discounts_applied_in_order(self, svc, puma_tshirt, icici):
         [result] = svc.calculate_cart_discounts(
@@ -117,7 +109,7 @@ class TestApplicability:
     def test_nike_gets_bank_offer_only(self, svc, nike_shoes, icici):
         [result] = svc.calculate_cart_discounts([CartItem(nike_shoes)], icici)
         assert len(result.applied_discounts) == 1
-        assert result.final_price == 8095.50
+        assert result.final_price == Decimal("8095.50")
 
     def test_bank_offer_skipped_for_non_matching_bank(self, svc, puma_tshirt, hdfc):
         [result] = svc.calculate_cart_discounts([CartItem(puma_tshirt)], hdfc)
@@ -137,7 +129,7 @@ class TestVoucherValidation:
     def test_valid_code_returns_voucher_object(self, svc):
         voucher = svc.validate_discount_code("SUPER69")
         assert voucher is not None
-        assert voucher.discount_pct == 69.0
+        assert voucher.percentage == Decimal("69")
 
     def test_case_insensitive_lookup(self, svc):
         assert svc.validate_discount_code("super69") is not None
@@ -161,15 +153,15 @@ class TestEdgeCases:
         assert svc.calculate_cart_discounts([], icici) == []
 
     def test_no_rules_means_no_discount(self, puma_tshirt):
-        svc = DiscountService([], [], [], [])
+        svc = DiscountService([])
         [result] = svc.calculate_cart_discounts([CartItem(puma_tshirt)])
-        assert result.final_price == 1499.0
+        assert result.final_price == Decimal("1499.00")
         assert result.applied_discounts == []
 
     def test_quantity_stored_but_prices_are_per_unit(self, svc, puma_tshirt, icici):
         [result] = svc.calculate_cart_discounts([CartItem(puma_tshirt, quantity=3)], icici)
         assert result.quantity == 3
-        assert result.original_price == 1499.0
+        assert result.original_price == Decimal("1499.00")
 
     def test_multiple_items_discounted_independently(self, svc, puma_tshirt, nike_shoes, icici):
         results = svc.calculate_cart_discounts(
@@ -186,7 +178,7 @@ class TestEdgeCases:
 class TestModelValidation:
     def test_negative_mrp_raises(self):
         with pytest.raises(ValueError, match="MRP must be positive"):
-            Product(id="X", name="X", brand="X", category="X", mrp=-1.0)
+            Product(id="X", name="X", brand="X", category="X", mrp=Decimal("-1"))
 
     def test_zero_quantity_raises(self, puma_tshirt):
         with pytest.raises(ValueError, match="Quantity must be at least 1"):

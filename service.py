@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from discounts import BankOffer, BrandDiscount, CategoryDiscount, VoucherDiscount
+from decimal import ROUND_HALF_UP, Decimal
+
+from discounts import DiscountRule, VoucherDiscount
 from models import (
     CartItem,
     DiscountBreakdown,
@@ -24,17 +26,10 @@ class DiscountService:
     Within each tier the highest-percentage applicable rule wins.
     """
 
-    def __init__(
-        self,
-        brand_discounts: list[BrandDiscount],
-        category_discounts: list[CategoryDiscount],
-        vouchers: list[VoucherDiscount],
-        bank_offers: list[BankOffer],
-    ) -> None:
-        self.brand_discounts = brand_discounts
-        self.category_discounts = category_discounts
-        self.vouchers = vouchers
-        self.bank_offers = bank_offers
+    def __init__(self, discount_rules: list[DiscountRule]) -> None:
+        # Single flat list — adding a new DiscountRule subclass requires
+        # no change here; it's picked up automatically by discount_type.
+        self._rules = discount_rules
 
     # ── Public API ──────────────────────────────────────────
 
@@ -43,9 +38,9 @@ class DiscountService:
         if not code or not code.strip():
             return None
         normalised = code.strip().upper()
-        for v in self.vouchers:
-            if v.code.upper() == normalised:
-                return v
+        for rule in self._rules:
+            if isinstance(rule, VoucherDiscount) and rule.code.upper() == normalised:
+                return rule
         return None
 
     def calculate_cart_discounts(
@@ -75,60 +70,22 @@ class DiscountService:
 
         for item in cart_items:
             applied: list[DiscountBreakdown] = []
-            price = item.product.mrp  # float — imprecise for compound discounts
+            price = item.product.mrp
 
-            # Phase 1: Brand
-            brand_matches = [d for d in self.brand_discounts if d.is_applicable(item.product)]
-            if brand_matches:
-                best = max(brand_matches, key=lambda d: d.min_discount_pct)
-                amount = round(price * best.min_discount_pct / 100, 2)
-                new_price = round(price - amount, 2)
-                applied.append(DiscountBreakdown(
-                    discount_type=DiscountType.BRAND, description=best.description,
-                    percentage=best.min_discount_pct, amount=amount,
-                    price_before=price, price_after=new_price,
-                ))
-                price = new_price
-
-            # Phase 2: Category
-            cat_matches = [d for d in self.category_discounts if d.is_applicable(item.product)]
-            if cat_matches:
-                best = max(cat_matches, key=lambda d: d.discount_pct)
-                amount = round(price * best.discount_pct / 100, 2)
-                new_price = round(price - amount, 2)
-                applied.append(DiscountBreakdown(
-                    discount_type=DiscountType.CATEGORY, description=best.description,
-                    percentage=best.discount_pct, amount=amount,
-                    price_before=price, price_after=new_price,
-                ))
-                price = new_price
-
-            # Phase 3: Voucher
+            price = self._apply_best(price, item, payment_info, DiscountType.BRAND, applied)
+            price = self._apply_best(price, item, payment_info, DiscountType.CATEGORY, applied)
             if voucher:
-                amount = round(price * voucher.discount_pct / 100, 2)
-                new_price = round(price - amount, 2)
-                applied.append(DiscountBreakdown(
-                    discount_type=DiscountType.VOUCHER, description=voucher.description,
-                    percentage=voucher.discount_pct, amount=amount,
-                    price_before=price, price_after=new_price,
-                ))
-                price = new_price
+                price = self._apply_rule(price, voucher, applied)
+            price = self._apply_best(price, item, payment_info, DiscountType.BANK, applied)
 
-            # Phase 4: Bank offer
-            bank_matches = [o for o in self.bank_offers if o.is_applicable(item.product, payment_info)]
-            if bank_matches:
-                best = max(bank_matches, key=lambda o: o.discount_pct)
-                amount = round(price * best.discount_pct / 100, 2)
-                new_price = round(price - amount, 2)
-                applied.append(DiscountBreakdown(
-                    discount_type=DiscountType.BANK, description=best.description,
-                    percentage=best.discount_pct, amount=amount,
-                    price_before=price, price_after=new_price,
-                ))
-                price = new_price
-
-            total_discount = round(item.product.mrp - price, 2)
-            total_pct = round(total_discount / item.product.mrp * 100, 2) if item.product.mrp > 0 else 0.0
+            total_discount = item.product.mrp - price
+            total_pct = (
+                (total_discount / item.product.mrp * Decimal("100")).quantize(
+                    Decimal("0.01"), rounding=ROUND_HALF_UP
+                )
+                if item.product.mrp > 0
+                else Decimal("0")
+            )
 
             results.append(DiscountedPrice(
                 product_name=item.product.name,
@@ -141,3 +98,34 @@ class DiscountService:
             ))
 
         return results
+
+    # ── Internals ───────────────────────────────────────────
+
+    def _applicable_rules(
+        self, item: CartItem, payment_info: PaymentInfo | None, dtype: DiscountType,
+    ) -> list[DiscountRule]:
+        return [
+            r for r in self._rules
+            if r.discount_type == dtype and r.is_applicable(item.product, payment_info)
+        ]
+
+    def _apply_best(
+        self, price: Decimal, item: CartItem, payment_info: PaymentInfo | None,
+        dtype: DiscountType, applied: list[DiscountBreakdown],
+    ) -> Decimal:
+        candidates = self._applicable_rules(item, payment_info, dtype)
+        if not candidates:
+            return price
+        return self._apply_rule(price, max(candidates, key=lambda r: r.percentage), applied)
+
+    @staticmethod
+    def _apply_rule(
+        price: Decimal, rule: DiscountRule, applied: list[DiscountBreakdown],
+    ) -> Decimal:
+        amount, new_price = rule.calculate(price)
+        applied.append(DiscountBreakdown(
+            discount_type=rule.discount_type, description=rule.description,
+            percentage=rule.percentage, amount=amount,
+            price_before=price, price_after=new_price,
+        ))
+        return new_price
